@@ -42,8 +42,7 @@ string(REGEX MATCH "[0-9]+" _API_VERSION_PATCH ${_API_VERSION_PATCH})
 set(SAC_APIVERSION ${_API_VERSION_MAJOR}.${_API_VERSION_MINOR}.${_API_VERSION_PATCH})
 
 set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/Modules)
-find_package(Rabbitmqc REQUIRED)
-INCLUDE_DIRECTORIES(SYSTEM ${Rabbitmqc_INCLUDE_DIRS})
+find_package(rabbitmq-c CONFIG REQUIRED)
 
 option(ENABLE_SSL_SUPPORT "Enable SSL support." ${Rabbitmqc_SSL_ENABLED})
 
@@ -115,7 +114,9 @@ set(SAC_LIB_SRCS
 
 
 add_library(SimpleAmqpClient ${SAC_LIB_SRCS})
-target_link_libraries(SimpleAmqpClient ${Rabbitmqc_LIBRARY} ${SOCKET_LIBRARY})
+target_link_libraries(SimpleAmqpClient rabbitmq::rabbitmq ${SOCKET_LIBRARY} )
+include(GNUInstallDirs)
+target_include_directories(SimpleAmqpClient PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src> $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
 if (WIN32)
   set_target_properties(SimpleAmqpClient PROPERTIES VERSION ${SAC_VERSION} OUTPUT_NAME SimpleAmqpClient.${SAC_SOVERSION})
@@ -173,11 +174,38 @@ if (BUILD_API_DOCS)
 endif ()
 
 include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+set(SAC_CMAKE_DIR ${CMAKE_INSTALL_LIBDIR}/cmake/SimpleAmqpClient)
+set(project_config "${CMAKE_CURRENT_BINARY_DIR}/simpleamqpclient-config.cmake")
+set(version_config "${CMAKE_CURRENT_BINARY_DIR}/simpleamqpclient-config-version.cmake")
+set(targets_export_name simpleamqpclient-targets)
 
-install(TARGETS SimpleAmqpClient
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+write_basic_package_version_file(
+    "${version_config}"
+    VERSION ${SAC_VERSION}
+    COMPATIBILITY AnyNewerVersion)
+
+configure_package_config_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/simpleamqpclient-config.cmake.in"
+    "${project_config}"
+    INSTALL_DESTINATION "${SAC_CMAKE_DIR}")
+
+export(TARGETS SimpleAmqpClient
+    NAMESPACE SimpleAmqpClient:: 
+    FILE ${PROJECT_BINARY_DIR}/${targets_export_name}.cmake)
+
+install(FILES ${project_config} ${version_config}
+    DESTINATION ${SAC_CMAKE_DIR}
+    )
+
+install(TARGETS SimpleAmqpClient 
+    EXPORT ${targets_export_name} 
+    DESTINATION lib
+    )
+
+install(EXPORT ${targets_export_name} 
+    DESTINATION ${SAC_CMAKE_DIR}
+    NAMESPACE SimpleAmqpClient::
     )
 
 install(FILES
