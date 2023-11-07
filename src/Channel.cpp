@@ -47,9 +47,11 @@
 #include <utility>
 #include <vector>
 
+#include "SimpleAmqpClient/AmqpException.h"
 #include "SimpleAmqpClient/AmqpLibraryException.h"
 #include "SimpleAmqpClient/AmqpResponseLibraryException.h"
 #include "SimpleAmqpClient/BadUriException.h"
+#include "SimpleAmqpClient/Bytes.h"
 #include "SimpleAmqpClient/Channel.h"
 #include "SimpleAmqpClient/ChannelImpl.h"
 #include "SimpleAmqpClient/ConsumerCancelledException.h"
@@ -62,13 +64,6 @@
 namespace AmqpClient {
 
 namespace {
-
-amqp_bytes_t StringToBytes(const std::string &str) {
-  amqp_bytes_t ret;
-  ret.bytes = reinterpret_cast<void *>(const_cast<char *>(str.data()));
-  ret.len = str.length();
-  return ret;
-}
 
 amqp_basic_properties_t CreateAmqpProperties(const BasicMessage &mes,
                                              Detail::amqp_pool_ptr_t &pool) {
@@ -102,36 +97,36 @@ amqp_basic_properties_t CreateAmqpProperties(const BasicMessage &mes,
   }
   if (mes.ExpirationIsSet()) {
     ret.expiration = StringToBytes(mes.Expiration());
-    ret._flags = AMQP_BASIC_EXPIRATION_FLAG;
+    ret._flags |= AMQP_BASIC_EXPIRATION_FLAG;
   }
   if (mes.MessageIdIsSet()) {
     ret.message_id = StringToBytes(mes.MessageId());
-    ret._flags = AMQP_BASIC_MESSAGE_ID_FLAG;
+    ret._flags |= AMQP_BASIC_MESSAGE_ID_FLAG;
   }
   if (mes.TimestampIsSet()) {
     ret.timestamp = mes.Timestamp();
-    ret._flags = AMQP_BASIC_TIMESTAMP_FLAG;
+    ret._flags |= AMQP_BASIC_TIMESTAMP_FLAG;
   }
   if (mes.TypeIsSet()) {
     ret.type = StringToBytes(mes.Type());
-    ret._flags = AMQP_BASIC_TYPE_FLAG;
+    ret._flags |= AMQP_BASIC_TYPE_FLAG;
   }
   if (mes.UserIdIsSet()) {
     ret.user_id = StringToBytes(mes.UserId());
-    ret._flags = AMQP_BASIC_USER_ID_FLAG;
+    ret._flags |= AMQP_BASIC_USER_ID_FLAG;
   }
   if (mes.AppIdIsSet()) {
     ret.app_id = StringToBytes(mes.AppId());
-    ret._flags = AMQP_BASIC_APP_ID_FLAG;
+    ret._flags |= AMQP_BASIC_APP_ID_FLAG;
   }
   if (mes.ClusterIdIsSet()) {
     ret.cluster_id = StringToBytes(mes.ClusterId());
-    ret._flags = AMQP_BASIC_CLUSTER_ID_FLAG;
+    ret._flags |= AMQP_BASIC_CLUSTER_ID_FLAG;
   }
   if (mes.HeaderTableIsSet()) {
     ret.headers =
         Detail::TableValueImpl::CreateAmqpTable(mes.HeaderTable(), pool);
-    ret._flags = AMQP_BASIC_HEADERS_FLAG;
+    ret._flags |= AMQP_BASIC_HEADERS_FLAG;
   }
   return ret;
 }
@@ -142,7 +137,7 @@ const std::string Channel::EXCHANGE_TYPE_DIRECT("direct");
 const std::string Channel::EXCHANGE_TYPE_FANOUT("fanout");
 const std::string Channel::EXCHANGE_TYPE_TOPIC("topic");
 
-Channel::ptr_t Channel::CreateFromUri(const std::string &uri, int frame_max) {
+Channel::OpenOpts Channel::OpenOpts::FromUri(const std::string &uri) {
   amqp_connection_info info;
   amqp_default_connection_info(&info);
 
@@ -153,94 +148,292 @@ Channel::ptr_t Channel::CreateFromUri(const std::string &uri, int frame_max) {
     throw BadUriException();
   }
 
-  return Create(std::string(info.host), info.port, std::string(info.user),
-                std::string(info.password), std::string(info.vhost), frame_max);
+  OpenOpts opts;
+  opts.host = info.host;
+  opts.vhost = info.vhost;
+  opts.port = info.port;
+  opts.auth = OpenOpts::BasicAuth(info.user, info.password);
+  if (info.ssl) {
+    opts.tls_params = OpenOpts::TLSParams();
+  }
+  return opts;
+}
+
+bool Channel::OpenOpts::BasicAuth::operator==(const BasicAuth &o) const {
+  return username == o.username && password == o.password;
+}
+
+bool Channel::OpenOpts::ExternalSaslAuth::operator==(
+    const ExternalSaslAuth &o) const {
+  return identity == o.identity;
+}
+
+bool Channel::OpenOpts::TLSParams::operator==(const TLSParams &o) const {
+  return client_key_path == o.client_key_path &&
+         client_cert_path == o.client_cert_path &&
+         ca_cert_path == o.ca_cert_path &&
+         verify_hostname == o.verify_hostname && verify_peer == o.verify_peer;
+}
+
+bool Channel::OpenOpts::operator==(const OpenOpts &o) const {
+  return host == o.host && vhost == o.vhost && port == o.port &&
+         frame_max == o.frame_max && auth == o.auth &&
+         tls_params == o.tls_params;
+}
+
+Channel::ptr_t Channel::Open(const OpenOpts &opts) {
+  if (opts.host.empty()) {
+    throw std::runtime_error("opts.host is not specified, it is required");
+  }
+  if (opts.vhost.empty()) {
+    throw std::runtime_error("opts.vhost is not specified, it is required");
+  }
+  if (opts.port <= 0) {
+    throw std::runtime_error(
+        "opts.port is not valid, it must be a positive number");
+  }
+  if (opts.auth.index()==0) {
+    throw std::runtime_error("opts.auth is not specified, it is required");
+  }
+  if (!opts.tls_params.has_value()) {
+    switch (opts.auth.index()) {
+      case 1: {
+        const OpenOpts::BasicAuth &auth =
+            std::get<OpenOpts::BasicAuth>(opts.auth);
+        return std::make_shared<Channel>(
+            OpenChannel(opts.host, opts.port, auth.username, auth.password,
+                        opts.vhost, opts.frame_max, false));
+      }
+      case 2: {
+        const OpenOpts::ExternalSaslAuth &auth =
+            std::get<OpenOpts::ExternalSaslAuth>(opts.auth);
+        return std::make_shared<Channel>(
+            OpenChannel(opts.host, opts.port, auth.identity, "", opts.vhost,
+                        opts.frame_max, true));
+      }
+      default:
+        throw std::logic_error("Unhandled auth type");
+    }
+  }
+  switch (opts.auth.index()) {
+    case 1: {
+      const OpenOpts::BasicAuth &auth =
+          std::get<OpenOpts::BasicAuth>(opts.auth);
+      return std::make_shared<Channel>(OpenSecureChannel(
+          opts.host, opts.port, auth.username, auth.password, opts.vhost,
+          opts.frame_max, opts.tls_params.value(), false));
+    }
+    case 2: {
+      const OpenOpts::ExternalSaslAuth &auth =
+          std::get<OpenOpts::ExternalSaslAuth>(opts.auth);
+      return std::make_shared<Channel>(
+          OpenSecureChannel(opts.host, opts.port, auth.identity, "", opts.vhost,
+                            opts.frame_max, opts.tls_params.value(), true));
+    }
+    default:
+      throw std::logic_error("Unhandled auth type");
+  }
+}
+
+Channel::ptr_t Channel::Create(const std::string &host, int port,
+                               const std::string &username,
+                               const std::string &password,
+                               const std::string &vhost, int frame_max) {
+  OpenOpts opts;
+  opts.host = host;
+  opts.vhost = vhost;
+  opts.port = port;
+  opts.frame_max = frame_max;
+  opts.auth = OpenOpts::BasicAuth(username, password);
+  return Open(opts);
+}
+
+Channel::ptr_t Channel::CreateSaslExternal(const std::string &host, int port,
+                                           const std::string &identity,
+                                           const std::string &vhost,
+                                           int frame_max) {
+  OpenOpts opts;
+  opts.host = host;
+  opts.vhost = vhost;
+  opts.port = port;
+  opts.frame_max = frame_max;
+  opts.auth = OpenOpts::ExternalSaslAuth(identity);
+  return Open(opts);
+}
+
+Channel::ptr_t Channel::CreateSecure(const std::string &path_to_ca_cert,
+                                     const std::string &host,
+                                     const std::string &path_to_client_key,
+                                     const std::string &path_to_client_cert,
+                                     int port, const std::string &username,
+                                     const std::string &password,
+                                     const std::string &vhost, int frame_max,
+                                     bool verify_hostname_and_peer) {
+  OpenOpts::TLSParams params;
+  params.client_key_path = path_to_client_key;
+  params.client_cert_path = path_to_client_cert;
+  params.ca_cert_path = path_to_ca_cert;
+  params.verify_hostname = verify_hostname_and_peer;
+  params.verify_peer = verify_hostname_and_peer;
+
+  OpenOpts opts;
+  opts.host = host;
+  opts.vhost = vhost;
+  opts.port = port;
+  opts.frame_max = frame_max;
+  opts.auth = OpenOpts::BasicAuth(username, password);
+  opts.tls_params = params;
+
+  return Open(opts);
+}
+
+Channel::ptr_t Channel::CreateSecure(const std::string &path_to_ca_cert,
+                                     const std::string &host,
+                                     const std::string &path_to_client_key,
+                                     const std::string &path_to_client_cert,
+                                     int port, const std::string &username,
+                                     const std::string &password,
+                                     const std::string &vhost, int frame_max,
+                                     bool verify_hostname, bool verify_peer) {
+  OpenOpts::TLSParams params;
+  params.client_key_path = path_to_client_key;
+  params.client_cert_path = path_to_client_cert;
+  params.ca_cert_path = path_to_ca_cert;
+  params.verify_hostname = verify_hostname;
+  params.verify_peer = verify_peer;
+
+  OpenOpts opts;
+  opts.host = host;
+  opts.vhost = vhost;
+  opts.port = port;
+  opts.frame_max = frame_max;
+  opts.auth = OpenOpts::BasicAuth(username, password);
+  opts.tls_params = params;
+
+  return Open(opts);
+}
+
+Channel::ptr_t Channel::CreateSecureSaslExternal(
+    const std::string &path_to_ca_cert, const std::string &host,
+    const std::string &path_to_client_key,
+    const std::string &path_to_client_cert, int port,
+    const std::string &identity, const std::string &vhost, int frame_max,
+    bool verify_hostname, bool verify_peer) {
+  OpenOpts::TLSParams params;
+  params.client_key_path = path_to_client_key;
+  params.client_cert_path = path_to_client_cert;
+  params.ca_cert_path = path_to_ca_cert;
+  params.verify_hostname = verify_hostname;
+  params.verify_peer = verify_peer;
+
+  OpenOpts opts;
+  opts.host = host;
+  opts.vhost = vhost;
+  opts.port = port;
+  opts.frame_max = frame_max;
+  opts.auth = OpenOpts::ExternalSaslAuth(identity);
+  opts.tls_params = params;
+
+  return Open(opts);
+}
+
+Channel::ptr_t Channel::CreateFromUri(const std::string &uri, int frame_max) {
+  OpenOpts opts = OpenOpts::FromUri(uri);
+  if (opts.tls_params.has_value()) {
+    throw std::runtime_error(
+        "CreateFromUri only supports non-SSL-enabled URIs");
+  }
+  opts.frame_max = frame_max;
+  return Open(opts);
 }
 
 Channel::ptr_t Channel::CreateSecureFromUri(
     const std::string &uri, const std::string &path_to_ca_cert,
     const std::string &path_to_client_key,
-    const std::string &path_to_client_cert, bool verify_hostname,
+    const std::string &path_to_client_cert, bool verify_hostname_and_peer,
     int frame_max) {
-  amqp_connection_info info;
-  amqp_default_connection_info(&info);
-
-  std::shared_ptr<char> uri_dup =
-      std::shared_ptr<char>(strdup(uri.c_str()), free);
-
-  if (0 != amqp_parse_url(uri_dup.get(), &info)) {
-    throw BadUriException();
+  OpenOpts opts = OpenOpts::FromUri(uri);
+  if (!opts.tls_params.has_value()) {
+    throw std::runtime_error(
+        "CreateSecureFromUri only supports SSL-enabled URIs");
   }
 
-  if (info.ssl) {
-    return CreateSecure(path_to_ca_cert, std::string(info.host),
-                        path_to_client_key, path_to_client_cert, info.port,
-                        std::string(info.user), std::string(info.password),
-                        std::string(info.vhost), frame_max, verify_hostname);
-  }
-  throw std::runtime_error(
-      "CreateSecureFromUri only supports SSL-enabled URIs.");
+  OpenOpts::TLSParams params;
+  opts.tls_params->client_key_path = path_to_client_key;
+  opts.tls_params->client_cert_path = path_to_client_cert;
+  opts.tls_params->ca_cert_path = path_to_ca_cert;
+  opts.tls_params->verify_hostname = verify_hostname_and_peer;
+  opts.tls_params->verify_peer = verify_hostname_and_peer;
+  opts.frame_max = frame_max;
+
+  return Open(opts);
 }
 
-Channel::Channel(const std::string &host, int port, const std::string &username,
-                 const std::string &password, const std::string &vhost,
-                 int frame_max, bool sasl_external)
-    : m_impl(new Detail::ChannelImpl) {
-  m_impl->m_connection = amqp_new_connection();
+Channel::ChannelImpl *Channel::OpenChannel(const std::string &host, int port,
+                                           const std::string &username,
+                                           const std::string &password,
+                                           const std::string &vhost,
+                                           int frame_max, bool sasl_external) {
+  ChannelImpl *impl = new ChannelImpl;
+  impl->m_connection = amqp_new_connection();
 
-  if (NULL == m_impl->m_connection) {
+  if (NULL == impl->m_connection) {
     throw std::bad_alloc();
   }
 
   try {
-    amqp_socket_t *socket = amqp_tcp_socket_new(m_impl->m_connection);
+    amqp_socket_t *socket = amqp_tcp_socket_new(impl->m_connection);
     int sock = amqp_socket_open(socket, host.c_str(), port);
-    m_impl->CheckForError(sock);
+    impl->CheckForError(sock);
 
-    m_impl->DoLogin(username, password, vhost, frame_max, sasl_external);
+    impl->DoLogin(username, password, vhost, frame_max, sasl_external);
   } catch (...) {
-    amqp_destroy_connection(m_impl->m_connection);
+    amqp_destroy_connection(impl->m_connection);
+    delete impl;
     throw;
   }
 
-  m_impl->SetIsConnected(true);
+  impl->SetIsConnected(true);
+  return impl;
 }
 
 #ifdef SAC_SSL_SUPPORT_ENABLED
-Channel::Channel(const std::string &host, int port, const std::string &username,
-                 const std::string &password, const std::string &vhost,
-                 int frame_max, const SSLConnectionParams &ssl_params,
-                 bool sasl_external)
-    : m_impl(new Detail::ChannelImpl) {
-  m_impl->m_connection = amqp_new_connection();
-  if (NULL == m_impl->m_connection) {
+Channel::ChannelImpl *Channel::OpenSecureChannel(
+    const std::string &host, int port, const std::string &username,
+    const std::string &password, const std::string &vhost, int frame_max,
+    const OpenOpts::TLSParams &tls_params, bool sasl_external) {
+  Channel::ChannelImpl *impl = new ChannelImpl;
+  impl->m_connection = amqp_new_connection();
+  if (NULL == impl->m_connection) {
     throw std::bad_alloc();
   }
 
-  amqp_socket_t *socket = amqp_ssl_socket_new(m_impl->m_connection);
+  amqp_socket_t *socket = amqp_ssl_socket_new(impl->m_connection);
   if (NULL == socket) {
     throw std::bad_alloc();
   }
 #if AMQP_VERSION >= 0x00080001
-  amqp_ssl_socket_set_verify_peer(socket, ssl_params.verify_peer);
-  amqp_ssl_socket_set_verify_hostname(socket, ssl_params.verify_hostname);
+  amqp_ssl_socket_set_verify_peer(socket, tls_params.verify_peer);
+  amqp_ssl_socket_set_verify_hostname(socket, tls_params.verify_hostname);
 #else
-  amqp_ssl_socket_set_verify(socket, ssl_params.verify_hostname);
+  amqp_ssl_socket_set_verify(socket, tls_params.verify_hostname);
 #endif
 
   try {
-    int status =
-        amqp_ssl_socket_set_cacert(socket, ssl_params.path_to_ca_cert.c_str());
-    if (status) {
-      throw AmqpLibraryException::CreateException(
-          status, "Error setting CA certificate for socket");
+    int status;
+    if (tls_params.ca_cert_path != "") {
+      status =
+          amqp_ssl_socket_set_cacert(socket, tls_params.ca_cert_path.c_str());
+      if (status) {
+        throw AmqpLibraryException::CreateException(
+            status, "Error setting CA certificate for socket");
+      }
     }
 
-    if (ssl_params.path_to_client_key != "" &&
-        ssl_params.path_to_client_cert != "") {
-      status = amqp_ssl_socket_set_key(socket,
-                                       ssl_params.path_to_client_cert.c_str(),
-                                       ssl_params.path_to_client_key.c_str());
+    if (tls_params.client_key_path != "" && tls_params.client_cert_path != "") {
+      status =
+          amqp_ssl_socket_set_key(socket, tls_params.client_cert_path.c_str(),
+                                  tls_params.client_key_path.c_str());
       if (status) {
         throw AmqpLibraryException::CreateException(
             status, "Error setting client certificate for socket");
@@ -253,22 +446,26 @@ Channel::Channel(const std::string &host, int port, const std::string &username,
           status, "Error setting client certificate for socket");
     }
 
-    m_impl->DoLogin(username, password, vhost, frame_max, sasl_external);
+    impl->DoLogin(username, password, vhost, frame_max, sasl_external);
   } catch (...) {
-    amqp_destroy_connection(m_impl->m_connection);
+    amqp_destroy_connection(impl->m_connection);
+    delete impl;
     throw;
   }
 
-  m_impl->SetIsConnected(true);
+  impl->SetIsConnected(true);
+  return impl;
 }
 #else
-Channel::Channel(const std::string &, int, const std::string &,
-                 const std::string &, const std::string &, int,
-                 const SSLConnectionParams &, bool) {
+Channel::ChannelImpl *Channel::OpenSecureChannel(
+    const std::string &, int, const std::string &, const std::string &,
+    const std::string &, int, const OpenOpts::TLSParams &, bool) {
   throw std::logic_error(
       "SSL support has not been compiled into SimpleAmqpClient");
 }
 #endif
+
+Channel::Channel(ChannelImpl *impl) : m_impl(impl) {}
 
 Channel::~Channel() {
   amqp_connection_close(m_impl->m_connection, AMQP_REPLY_SUCCESS);
@@ -277,6 +474,25 @@ Channel::~Channel() {
 
 int Channel::GetSocketFD() const {
   return amqp_get_sockfd(m_impl->m_connection);
+}
+
+bool Channel::CheckExchangeExists(std::string_view exchange_name) {
+  const std::array<std::uint32_t, 1> DECLARE_OK = {
+      AMQP_EXCHANGE_DECLARE_OK_METHOD};
+
+  amqp_exchange_declare_t declare = {};
+  declare.exchange = StringRefToBytes(exchange_name);
+  declare.passive = true;
+  declare.nowait = false;
+
+  try {
+    amqp_frame_t frame =
+        m_impl->DoRpc(AMQP_EXCHANGE_DECLARE_METHOD, &declare, DECLARE_OK);
+    m_impl->MaybeReleaseBuffersOnChannel(frame.channel);
+  } catch (NotFoundException e) {
+    return false;
+  }
+  return true;
 }
 
 void Channel::DeclareExchange(const std::string &exchange_name,
@@ -295,8 +511,8 @@ void Channel::DeclareExchange(const std::string &exchange_name,
   m_impl->CheckIsConnected();
 
   amqp_exchange_declare_t declare = {};
-  declare.exchange = amqp_cstring_bytes(exchange_name.c_str());
-  declare.type = amqp_cstring_bytes(exchange_type.c_str());
+  declare.exchange = StringToBytes(exchange_name);
+  declare.type = StringToBytes(exchange_type);
   declare.passive = passive;
   declare.durable = durable;
   declare.auto_delete = auto_delete;
@@ -318,7 +534,7 @@ void Channel::DeleteExchange(const std::string &exchange_name, bool if_unused) {
   m_impl->CheckIsConnected();
 
   amqp_exchange_delete_t del = {};
-  del.exchange = amqp_cstring_bytes(exchange_name.c_str());
+  del.exchange = StringToBytes(exchange_name);
   del.if_unused = if_unused;
   del.nowait = false;
 
@@ -341,9 +557,9 @@ void Channel::BindExchange(const std::string &destination,
   m_impl->CheckIsConnected();
 
   amqp_exchange_bind_t bind = {};
-  bind.destination = amqp_cstring_bytes(destination.c_str());
-  bind.source = amqp_cstring_bytes(source.c_str());
-  bind.routing_key = amqp_cstring_bytes(routing_key.c_str());
+  bind.destination = StringToBytes(destination);
+  bind.source = StringToBytes(source);
+  bind.routing_key = StringToBytes(routing_key);
   bind.nowait = false;
 
   Detail::amqp_pool_ptr_t table_pool;
@@ -369,9 +585,9 @@ void Channel::UnbindExchange(const std::string &destination,
   m_impl->CheckIsConnected();
 
   amqp_exchange_unbind_t unbind = {};
-  unbind.destination = amqp_cstring_bytes(destination.c_str());
-  unbind.source = amqp_cstring_bytes(source.c_str());
-  unbind.routing_key = amqp_cstring_bytes(routing_key.c_str());
+  unbind.destination = StringToBytes(destination);
+  unbind.source = StringToBytes(source);
+  unbind.routing_key = StringToBytes(routing_key);
   unbind.nowait = false;
 
   Detail::amqp_pool_ptr_t table_pool;
@@ -381,6 +597,25 @@ void Channel::UnbindExchange(const std::string &destination,
   amqp_frame_t frame =
       m_impl->DoRpc(AMQP_EXCHANGE_UNBIND_METHOD, &unbind, UNBIND_OK);
   m_impl->MaybeReleaseBuffersOnChannel(frame.channel);
+}
+
+bool Channel::CheckQueueExists(std::string_view queue_name) {
+  const std::array<std::uint32_t, 1> DECLARE_OK = {
+      AMQP_QUEUE_DECLARE_OK_METHOD};
+
+  amqp_queue_declare_t declare = {};
+  declare.queue = StringRefToBytes(queue_name);
+  declare.passive = true;
+  declare.nowait = false;
+
+  try {
+    amqp_frame_t frame =
+        m_impl->DoRpc(AMQP_QUEUE_DECLARE_METHOD, &declare, DECLARE_OK);
+    m_impl->MaybeReleaseBuffersOnChannel(frame.channel);
+  } catch (NotFoundException e) {
+    return false;
+  }
+  return true;
 }
 
 std::string Channel::DeclareQueue(const std::string &queue_name, bool passive,
@@ -421,7 +656,7 @@ std::string Channel::DeclareQueueWithCounts(const std::string &queue_name,
   m_impl->CheckIsConnected();
 
   amqp_queue_declare_t declare = {};
-  declare.queue = amqp_cstring_bytes(queue_name.c_str());
+  declare.queue = StringToBytes(queue_name);
   declare.passive = passive;
   declare.durable = durable;
   declare.exclusive = exclusive;
@@ -453,7 +688,7 @@ void Channel::DeleteQueue(const std::string &queue_name, bool if_unused,
   m_impl->CheckIsConnected();
 
   amqp_queue_delete_t del = {};
-  del.queue = amqp_cstring_bytes(queue_name.c_str());
+  del.queue = StringToBytes(queue_name);
   del.if_unused = if_unused;
   del.if_empty = if_empty;
   del.nowait = false;
@@ -476,9 +711,9 @@ void Channel::BindQueue(const std::string &queue_name,
   m_impl->CheckIsConnected();
 
   amqp_queue_bind_t bind = {};
-  bind.queue = amqp_cstring_bytes(queue_name.c_str());
-  bind.exchange = amqp_cstring_bytes(exchange_name.c_str());
-  bind.routing_key = amqp_cstring_bytes(routing_key.c_str());
+  bind.queue = StringToBytes(queue_name);
+  bind.exchange = StringToBytes(exchange_name);
+  bind.routing_key = StringToBytes(routing_key);
   bind.nowait = false;
 
   Detail::amqp_pool_ptr_t table_pool;
@@ -503,9 +738,9 @@ void Channel::UnbindQueue(const std::string &queue_name,
   m_impl->CheckIsConnected();
 
   amqp_queue_unbind_t unbind = {};
-  unbind.queue = amqp_cstring_bytes(queue_name.c_str());
-  unbind.exchange = amqp_cstring_bytes(exchange_name.c_str());
-  unbind.routing_key = amqp_cstring_bytes(routing_key.c_str());
+  unbind.queue = StringToBytes(queue_name);
+  unbind.exchange = StringToBytes(exchange_name);
+  unbind.routing_key = StringToBytes(routing_key);
 
   Detail::amqp_pool_ptr_t table_pool;
   unbind.arguments =
@@ -521,7 +756,7 @@ void Channel::PurgeQueue(const std::string &queue_name) {
   m_impl->CheckIsConnected();
 
   amqp_queue_purge_t purge = {};
-  purge.queue = amqp_cstring_bytes(queue_name.c_str());
+  purge.queue = StringToBytes(queue_name);
   purge.nowait = false;
 
   amqp_frame_t frame = m_impl->DoRpc(AMQP_QUEUE_PURGE_METHOD, &purge, PURGE_OK);
@@ -589,9 +824,9 @@ void Channel::BasicPublish(const std::string &exchange_name,
   amqp_basic_properties_t properties = CreateAmqpProperties(*message, pool);
 
   m_impl->CheckForError(amqp_basic_publish(
-      m_impl->m_connection, channel, amqp_cstring_bytes(exchange_name.c_str()),
-      amqp_cstring_bytes(routing_key.c_str()), mandatory, immediate,
-      &properties, StringToBytes(message->Body())));
+      m_impl->m_connection, channel, StringToBytes(exchange_name),
+      StringToBytes(routing_key), mandatory, immediate, &properties,
+      StringToBytes(message->Body())));
 
   // If we've done things correctly we can get one of 4 things back from the
   // broker
@@ -644,7 +879,7 @@ bool Channel::BasicGet(Envelope::ptr_t &envelope, const std::string &queue,
   m_impl->CheckIsConnected();
 
   amqp_basic_get_t get = {};
-  get.queue = amqp_cstring_bytes(queue.c_str());
+  get.queue = StringToBytes(queue);
   get.no_ack = no_ack;
 
   amqp_channel_t channel = m_impl->GetChannel();
@@ -720,8 +955,8 @@ std::string Channel::BasicConsume(const std::string &queue,
       AMQP_BASIC_CONSUME_OK_METHOD};
 
   amqp_basic_consume_t consume = {};
-  consume.queue = amqp_cstring_bytes(queue.c_str());
-  consume.consumer_tag = amqp_cstring_bytes(consumer_tag.c_str());
+  consume.queue = StringToBytes(queue);
+  consume.consumer_tag = StringToBytes(consumer_tag);
   consume.no_local = no_local;
   consume.no_ack = no_ack;
   consume.exclusive = exclusive;
@@ -768,7 +1003,7 @@ void Channel::BasicCancel(const std::string &consumer_tag) {
   const std::array<std::uint32_t, 1> CANCEL_OK = {AMQP_BASIC_CANCEL_OK_METHOD};
 
   amqp_basic_cancel_t cancel = {};
-  cancel.consumer_tag = amqp_cstring_bytes(consumer_tag.c_str());
+  cancel.consumer_tag = StringToBytes(consumer_tag);
   cancel.nowait = false;
 
   m_impl->DoRpcOnChannel(channel, AMQP_BASIC_CANCEL_METHOD, &cancel, CANCEL_OK);

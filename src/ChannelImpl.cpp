@@ -55,7 +55,6 @@
 #define BROKER_HEARTBEAT 0
 
 namespace AmqpClient {
-namespace Detail {
 
 namespace {
 
@@ -106,20 +105,22 @@ void SetMessageProperties(BasicMessage &mes,
     mes.ClusterId(BytesToString(props.cluster_id));
   }
   if (0 != (props._flags & AMQP_BASIC_HEADERS_FLAG)) {
-    mes.HeaderTable(TableValueImpl::CreateTable(props.headers));
+    mes.HeaderTable(Detail::TableValueImpl::CreateTable(props.headers));
   }
 }
 }  // namespace
 
-ChannelImpl::ChannelImpl() : m_last_used_channel(0), m_is_connected(false) {
+Channel::ChannelImpl::ChannelImpl()
+    : m_last_used_channel(0), m_is_connected(false) {
   m_channels.push_back(CS_Used);
 }
 
-ChannelImpl::~ChannelImpl() {}
+Channel::ChannelImpl::~ChannelImpl() {}
 
-void ChannelImpl::DoLogin(const std::string &username,
-                          const std::string &password, const std::string &vhost,
-                          int frame_max, bool sasl_external) {
+void Channel::ChannelImpl::DoLogin(const std::string &username,
+                                   const std::string &password,
+                                   const std::string &vhost, int frame_max,
+                                   bool sasl_external) {
   amqp_table_entry_t capabilties[1];
   amqp_table_entry_t capability_entry;
   amqp_table_t client_properties;
@@ -153,7 +154,7 @@ void ChannelImpl::DoLogin(const std::string &username,
   m_brokerVersion = ComputeBrokerVersion(m_connection);
 }
 
-amqp_channel_t ChannelImpl::GetNextChannelId() {
+amqp_channel_t Channel::ChannelImpl::GetNextChannelId() {
   channel_state_list_t::iterator unused_channel =
       std::find(m_channels.begin(), m_channels.end(), CS_Closed);
 
@@ -173,7 +174,7 @@ amqp_channel_t ChannelImpl::GetNextChannelId() {
   return unused_channel - m_channels.begin();
 }
 
-amqp_channel_t ChannelImpl::CreateNewChannel() {
+amqp_channel_t Channel::ChannelImpl::CreateNewChannel() {
   amqp_channel_t new_channel = GetNextChannelId();
 
   static const std::array<std::uint32_t, 1> OPEN_OK = {
@@ -193,7 +194,7 @@ amqp_channel_t ChannelImpl::CreateNewChannel() {
   return new_channel;
 }
 
-amqp_channel_t ChannelImpl::GetChannel() {
+amqp_channel_t Channel::ChannelImpl::GetChannel() {
   if (CS_Open == m_channels.at(m_last_used_channel)) {
     m_channels[m_last_used_channel] = CS_Used;
     return m_last_used_channel;
@@ -212,16 +213,16 @@ amqp_channel_t ChannelImpl::GetChannel() {
   return it - m_channels.begin();
 }
 
-void ChannelImpl::ReturnChannel(amqp_channel_t channel) {
+void Channel::ChannelImpl::ReturnChannel(amqp_channel_t channel) {
   m_channels.at(channel) = CS_Open;
   m_last_used_channel = channel;
 }
 
-bool ChannelImpl::IsChannelOpen(amqp_channel_t channel) {
+bool Channel::ChannelImpl::IsChannelOpen(amqp_channel_t channel) {
   return CS_Closed != m_channels.at(channel);
 }
 
-void ChannelImpl::FinishCloseChannel(amqp_channel_t channel) {
+void Channel::ChannelImpl::FinishCloseChannel(amqp_channel_t channel) {
   m_channels.at(channel) = CS_Closed;
 
   amqp_channel_close_ok_t close_ok;
@@ -229,14 +230,14 @@ void ChannelImpl::FinishCloseChannel(amqp_channel_t channel) {
                                  AMQP_CHANNEL_CLOSE_OK_METHOD, &close_ok));
 }
 
-void ChannelImpl::FinishCloseConnection() {
+void Channel::ChannelImpl::FinishCloseConnection() {
   SetIsConnected(false);
   amqp_connection_close_ok_t close_ok;
   amqp_send_method(m_connection, 0, AMQP_CONNECTION_CLOSE_OK_METHOD, &close_ok);
 }
 
-void ChannelImpl::CheckRpcReply(amqp_channel_t channel,
-                                const amqp_rpc_reply_t &reply) {
+void Channel::ChannelImpl::CheckRpcReply(amqp_channel_t channel,
+                                         const amqp_rpc_reply_t &reply) {
   switch (reply.reply_type) {
     case AMQP_RESPONSE_NORMAL:
       return;
@@ -261,13 +262,13 @@ void ChannelImpl::CheckRpcReply(amqp_channel_t channel,
   }
 }
 
-void ChannelImpl::CheckForError(int ret) {
+void Channel::ChannelImpl::CheckForError(int ret) {
   if (ret < 0) {
     throw AmqpLibraryException::CreateException(ret);
   }
 }
 
-MessageReturnedException ChannelImpl::CreateMessageReturnedException(
+MessageReturnedException Channel::ChannelImpl::CreateMessageReturnedException(
     amqp_basic_return_t &return_method, amqp_channel_t channel) {
   const int reply_code = return_method.reply_code;
   const std::string reply_text((char *)return_method.reply_text.bytes,
@@ -281,7 +282,7 @@ MessageReturnedException ChannelImpl::CreateMessageReturnedException(
                                   routing_key);
 }
 
-BasicMessage::ptr_t ChannelImpl::ReadContent(amqp_channel_t channel) {
+BasicMessage::ptr_t Channel::ChannelImpl::ReadContent(amqp_channel_t channel) {
   amqp_frame_t frame;
 
   GetNextFrameOnChannel(channel, frame);
@@ -330,8 +331,8 @@ BasicMessage::ptr_t ChannelImpl::ReadContent(amqp_channel_t channel) {
   return message;
 }
 
-void ChannelImpl::CheckFrameForClose(amqp_frame_t &frame,
-                                     amqp_channel_t channel) {
+void Channel::ChannelImpl::CheckFrameForClose(amqp_frame_t &frame,
+                                              amqp_channel_t channel) {
   if (frame.frame_type == AMQP_FRAME_METHOD) {
     switch (frame.payload.method.id) {
       case AMQP_CHANNEL_CLOSE_METHOD:
@@ -349,12 +350,13 @@ void ChannelImpl::CheckFrameForClose(amqp_frame_t &frame,
   }
 }
 
-void ChannelImpl::AddConsumer(const std::string &consumer_tag,
-                              amqp_channel_t channel) {
+void Channel::ChannelImpl::AddConsumer(const std::string &consumer_tag,
+                                       amqp_channel_t channel) {
   m_consumer_channel_map.insert(std::make_pair(consumer_tag, channel));
 }
 
-amqp_channel_t ChannelImpl::RemoveConsumer(const std::string &consumer_tag) {
+amqp_channel_t Channel::ChannelImpl::RemoveConsumer(
+    const std::string &consumer_tag) {
   std::map<std::string, amqp_channel_t>::iterator it =
       m_consumer_channel_map.find(consumer_tag);
   if (it == m_consumer_channel_map.end()) {
@@ -368,7 +370,7 @@ amqp_channel_t ChannelImpl::RemoveConsumer(const std::string &consumer_tag) {
   return result;
 }
 
-amqp_channel_t ChannelImpl::GetConsumerChannel(
+amqp_channel_t Channel::ChannelImpl::GetConsumerChannel(
     const std::string &consumer_tag) {
   std::map<std::string, amqp_channel_t>::const_iterator it =
       m_consumer_channel_map.find(consumer_tag);
@@ -378,7 +380,8 @@ amqp_channel_t ChannelImpl::GetConsumerChannel(
   return it->second;
 }
 
-std::vector<amqp_channel_t> ChannelImpl::GetAllConsumerChannels() const {
+std::vector<amqp_channel_t> Channel::ChannelImpl::GetAllConsumerChannels()
+    const {
   std::vector<amqp_channel_t> ret;
   for (consumer_map_t::const_iterator it = m_consumer_channel_map.begin();
        it != m_consumer_channel_map.end(); ++it) {
@@ -388,7 +391,8 @@ std::vector<amqp_channel_t> ChannelImpl::GetAllConsumerChannels() const {
   return ret;
 }
 
-bool ChannelImpl::CheckForQueuedMessageOnChannel(amqp_channel_t channel) const {
+bool Channel::ChannelImpl::CheckForQueuedMessageOnChannel(
+    amqp_channel_t channel) const {
   frame_queue_t::const_iterator it = std::find_if(
       m_frame_queue.begin(), m_frame_queue.end(), [channel](auto &frame) {
         return ChannelImpl::is_method_on_channel(
@@ -400,7 +404,7 @@ bool ChannelImpl::CheckForQueuedMessageOnChannel(amqp_channel_t channel) const {
   }
 
   it = std::find_if(it + 1, m_frame_queue.end(), [channel](auto &frame) {
-    return ChannelImpl::is_on_channel(frame, channel);
+    return Channel::ChannelImpl::is_on_channel(frame, channel);
   });
 
   if (it == m_frame_queue.end()) {
@@ -415,7 +419,7 @@ bool ChannelImpl::CheckForQueuedMessageOnChannel(amqp_channel_t channel) const {
 
   while (body_received < body_length) {
     it = std::find_if(it + 1, m_frame_queue.end(), [channel](auto &frame) {
-      return ChannelImpl::is_on_channel(frame, channel);
+      return Channel::ChannelImpl::is_on_channel(frame, channel);
     });
 
     if (it == m_frame_queue.end()) {
@@ -430,7 +434,7 @@ bool ChannelImpl::CheckForQueuedMessageOnChannel(amqp_channel_t channel) const {
   return true;
 }
 
-void ChannelImpl::AddToFrameQueue(const amqp_frame_t &frame) {
+void Channel::ChannelImpl::AddToFrameQueue(const amqp_frame_t &frame) {
   m_frame_queue.push_back(frame);
 
   if (CheckForQueuedMessageOnChannel(frame.channel)) {
@@ -445,8 +449,8 @@ void ChannelImpl::AddToFrameQueue(const amqp_frame_t &frame) {
   }
 }
 
-bool ChannelImpl::GetNextFrameFromBroker(amqp_frame_t &frame,
-                                         std::chrono::microseconds timeout) {
+bool Channel::ChannelImpl::GetNextFrameFromBroker(
+    amqp_frame_t &frame, std::chrono::microseconds timeout) {
   struct timeval *tvp = NULL;
   struct timeval tv_timeout;
   memset(&tv_timeout, 0, sizeof(tv_timeout));
@@ -477,9 +481,9 @@ bool ChannelImpl::GetNextFrameFromBroker(amqp_frame_t &frame,
   return true;
 }
 
-bool ChannelImpl::GetNextFrameOnChannel(amqp_channel_t channel,
-                                        amqp_frame_t &frame,
-                                        std::chrono::microseconds timeout) {
+bool Channel::ChannelImpl::GetNextFrameOnChannel(
+    amqp_channel_t channel, amqp_frame_t &frame,
+    std::chrono::microseconds timeout) {
   frame_queue_t::iterator it = std::find_if(
       m_frame_queue.begin(), m_frame_queue.end(), [channel](auto &frame) {
         return ChannelImpl::is_on_channel(frame, channel);
@@ -502,17 +506,18 @@ bool ChannelImpl::GetNextFrameOnChannel(amqp_channel_t channel,
   return GetNextFrameFromBrokerOnChannel(channels, frame, timeout);
 }
 
-void ChannelImpl::MaybeReleaseBuffersOnChannel(amqp_channel_t channel) {
+void Channel::ChannelImpl::MaybeReleaseBuffersOnChannel(
+    amqp_channel_t channel) {
   if (m_frame_queue.end() ==
       std::find_if(m_frame_queue.begin(), m_frame_queue.end(),
                    [channel](auto &frame) {
-                     return ChannelImpl::is_on_channel(frame, channel);
+                     return Channel::ChannelImpl::is_on_channel(frame, channel);
                    })) {
     amqp_maybe_release_buffers_on_channel(m_connection, channel);
   }
 }
 
-void ChannelImpl::CheckIsConnected() {
+void Channel::ChannelImpl::CheckIsConnected() {
   if (!m_is_connected) {
     throw ConnectionClosedException();
   }
@@ -544,7 +549,8 @@ std::vector<std::string> splitVersion(const std::string &version) {
 
 }  // namespace
 
-std::uint32_t ChannelImpl::ComputeBrokerVersion(amqp_connection_state_t state) {
+std::uint32_t Channel::ChannelImpl::ComputeBrokerVersion(
+    amqp_connection_state_t state) {
   const amqp_table_t *properties = amqp_get_server_properties(state);
   const amqp_bytes_t version = amqp_cstring_bytes("version");
   amqp_table_entry_t *version_entry = NULL;
@@ -573,5 +579,4 @@ std::uint32_t ChannelImpl::ComputeBrokerVersion(amqp_connection_state_t state) {
          (version_patch & 0xFF);
 }
 
-}  // namespace Detail
 }  // namespace AmqpClient

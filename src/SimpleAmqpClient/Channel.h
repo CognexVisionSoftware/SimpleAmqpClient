@@ -31,7 +31,10 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
+#include <variant>
+#include <optional>
 
 #include "SimpleAmqpClient/BasicMessage.h"
 #include "SimpleAmqpClient/Envelope.h"
@@ -47,10 +50,6 @@
 /// The AmqpClient::Channel class is defined in this header file.
 
 namespace AmqpClient {
-
-namespace Detail {
-class ChannelImpl;
-}
 
 /**
  * A single channel multiplexed in an AMQP connection
@@ -68,6 +67,76 @@ class SIMPLEAMQPCLIENT_EXPORT Channel {
       EXCHANGE_TYPE_FANOUT;                      ///< `"fanout"` string constant
   static const std::string EXCHANGE_TYPE_TOPIC;  ///< `"topic"` string constant
 
+  struct SIMPLEAMQPCLIENT_EXPORT OpenOpts {
+    /// Use username and password to authenticate with the broker.
+    struct SIMPLEAMQPCLIENT_EXPORT BasicAuth {
+      std::string username;
+      std::string password;
+
+      BasicAuth() {}
+      BasicAuth(const std::string &username, const std::string &password)
+          : username(username), password(password) {}
+      bool operator==(const BasicAuth &) const;
+    };
+
+    /// Use External SASL method to authenticate with the broker.
+    struct SIMPLEAMQPCLIENT_EXPORT ExternalSaslAuth {
+      std::string identity;
+
+      ExternalSaslAuth() {}
+      explicit ExternalSaslAuth(const std::string &identity)
+          : identity(identity) {}
+      bool operator==(const ExternalSaslAuth &) const;
+    };
+
+    /// Parameters
+    struct SIMPLEAMQPCLIENT_EXPORT TLSParams {
+      std::string client_key_path;   ///< Path to client key.
+      std::string client_cert_path;  ///< Path to client cert.
+      std::string ca_cert_path;      ///< Path to CA cert.
+      bool verify_hostname;  ///< Verify host matches certificate. Default: true
+      bool verify_peer;      ///< Verify presented certificate. Default: true
+
+      TLSParams() : verify_hostname(true), verify_peer(true) {}
+      bool operator==(const TLSParams &) const;
+    };
+
+    std::string host;   ///< Broker hostname. Required.
+    std::string vhost;  ///< Virtualhost on the broker. Default '/', required.
+    int port;           ///< Port to connect to, default is 5672.
+    int frame_max;      ///< Max frame size in bytes. Default 128KB.
+    /// One of BasicAuth or ExternalSaslAuth is required.
+    std::variant<std::monostate, BasicAuth, ExternalSaslAuth> auth;
+    /// Connect using TLS/SSL when set, otherwise use an unencrypted channel.
+    std::optional<TLSParams> tls_params;
+
+    /**
+     * Create an OpenOpts struct from a URI.
+     *
+     * URIs look like amqp[s]://[username[:password]@]host[:port]/[vhost].
+     * Unspecified parts of the URL will take default values:
+     * - username: guest
+     * - password: guest
+     * - host: localhost
+     * - port: 5672 for 'amqp', and 5671 for 'amqps'
+     * - vhost: '/'
+     *
+     * NOTE: for TLS/SSL connections, additional configuration is required.
+     */
+    static OpenOpts FromUri(const std::string &uri);
+
+    OpenOpts() : vhost("/"), port(5672), frame_max(131072) {}
+    bool operator==(const OpenOpts &) const;
+  };
+
+  /**
+   * Open a new channel to the broker.
+   *
+   * See documentation for \ref OpenOpts for details on what can be
+   * passed into this function.
+   */
+  static ptr_t Open(const OpenOpts &opts);
+
   /**
    * Creates a new channel object
    *
@@ -83,13 +152,11 @@ class SIMPLEAMQPCLIENT_EXPORT Channel {
    * frame to this value
    * @return a new Channel object pointer
    */
+  SAC_DEPRECATED("Channel::Create is deprecated. Use Channel::Open.")
   static ptr_t Create(const std::string &host = "127.0.0.1", int port = 5672,
                       const std::string &username = "guest",
                       const std::string &password = "guest",
-                      const std::string &vhost = "/", int frame_max = 131072) {
-    return std::make_shared<Channel>(host, port, username, password, vhost,
-                                     frame_max, false);
-  }
+                      const std::string &vhost = "/", int frame_max = 131072);
 
   /**
    * Creates a new channel object
@@ -108,31 +175,14 @@ class SIMPLEAMQPCLIENT_EXPORT Channel {
    * frame to this value
    * @return a new Channel object pointer
    */
+  SAC_DEPRECATED(
+      "Channel::CreateSaslExternal is deprecated. Use Channel::Open.")
   static ptr_t CreateSaslExternal(const std::string &host = "127.0.0.1",
                                   int port = 5672,
                                   const std::string &identity = "guest",
                                   const std::string &vhost = "/",
-                                  int frame_max = 131072) {
-    return std::make_shared<Channel>(host, port, identity, "", vhost, frame_max,
-                                     true);
-  }
+                                  int frame_max = 131072);
 
- protected:
-  /// A POD carrier of SSL connection parameters
-  struct SSLConnectionParams {
-    /// CA certificate filepath
-    std::string path_to_ca_cert;
-    /// Client key filepath
-    std::string path_to_client_key;
-    /// Client certificate filepath
-    std::string path_to_client_cert;
-    /// Whether to ignore server hostname mismatch
-    bool verify_hostname;
-    /// Wehter to verify the certificate
-    bool verify_peer;
-  };
-
- public:
   /**
    * Creates a new channel object, using TLS
    *
@@ -154,6 +204,7 @@ class SIMPLEAMQPCLIENT_EXPORT Channel {
    *
    * @return a new Channel object pointer
    */
+  SAC_DEPRECATED("Channel::CreateSecure is deprecated. Use Channel::Open.")
   static ptr_t CreateSecure(const std::string &path_to_ca_cert = "",
                             const std::string &host = "127.0.0.1",
                             const std::string &path_to_client_key = "",
@@ -163,12 +214,7 @@ class SIMPLEAMQPCLIENT_EXPORT Channel {
                             const std::string &password = "guest",
                             const std::string &vhost = "/",
                             int frame_max = 131072,
-                            bool verify_hostname_and_peer = true) {
-    return CreateSecure(path_to_ca_cert, host, path_to_client_key,
-                        path_to_client_cert, port, username, password, vhost,
-                        frame_max, verify_hostname_and_peer,
-                        verify_hostname_and_peer);
-  }
+                            bool verify_hostname_and_peer = true);
 
   /**
    * Creates a new channel object
@@ -195,6 +241,7 @@ class SIMPLEAMQPCLIENT_EXPORT Channel {
    *
    * @return a new Channel object pointer
    */
+  SAC_DEPRECATED("Channel::CreateSecure is deprecated. Use Channel::Open.")
   static ptr_t CreateSecure(const std::string &path_to_ca_cert,
                             const std::string &host,
                             const std::string &path_to_client_key,
@@ -202,17 +249,7 @@ class SIMPLEAMQPCLIENT_EXPORT Channel {
                             const std::string &username,
                             const std::string &password,
                             const std::string &vhost, int frame_max,
-                            bool verify_hostname, bool verify_peer) {
-    SSLConnectionParams ssl_params;
-    ssl_params.path_to_ca_cert = path_to_ca_cert;
-    ssl_params.path_to_client_key = path_to_client_key;
-    ssl_params.path_to_client_cert = path_to_client_cert;
-    ssl_params.verify_hostname = verify_hostname;
-    ssl_params.verify_peer = verify_peer;
-
-    return std::make_shared<Channel>(host, port, username, password, vhost,
-                                     frame_max, ssl_params, false);
-  }
+                            bool verify_hostname, bool verify_peer);
 
   /**
    * Creates a new channel object
@@ -238,24 +275,15 @@ class SIMPLEAMQPCLIENT_EXPORT Channel {
    *
    * @return a new Channel object pointer
    */
+  SAC_DEPRECATED(
+      "Channel::CreateSecureSaslExternal is deprecated. Use Channel::Open.")
   static ptr_t CreateSecureSaslExternal(const std::string &path_to_ca_cert,
                                         const std::string &host,
                                         const std::string &path_to_client_key,
                                         const std::string &path_to_client_cert,
                                         int port, const std::string &identity,
                                         const std::string &vhost, int frame_max,
-                                        bool verify_hostname,
-                                        bool verify_peer) {
-    SSLConnectionParams ssl_params;
-    ssl_params.path_to_ca_cert = path_to_ca_cert;
-    ssl_params.path_to_client_key = path_to_client_key;
-    ssl_params.path_to_client_cert = path_to_client_cert;
-    ssl_params.verify_hostname = verify_hostname;
-    ssl_params.verify_peer = verify_peer;
-
-    return std::make_shared<Channel>(host, port, identity, "", vhost, frame_max,
-                                     ssl_params, true);
-  }
+                                        bool verify_hostname, bool verify_peer);
 
   /**
    * Create a new Channel object from an AMQP URI
@@ -266,6 +294,7 @@ class SIMPLEAMQPCLIENT_EXPORT Channel {
    * any frame to this value
    * @returns a new Channel object
    */
+  SAC_DEPRECATED("Channel::CreateFromUri is deprecated. Use Channel::Open.")
   static ptr_t CreateFromUri(const std::string &uri, int frame_max = 131072);
 
   /**
@@ -278,53 +307,26 @@ class SIMPLEAMQPCLIENT_EXPORT Channel {
    * @param path_to_client_key Path to client key file
    * @param path_to_client_cert Path to client certificate file
    * @param verify_hostname Verify the hostname against the certificate when
-   * opening the SSL connection.
+   * opening the SSL connection and the certificate chain that is sent by the
+   * broker.
    * @param frame_max requests that the broker limit the maximum size of
    * any frame to this value
    * @returns a new Channel object
    */
+  SAC_DEPRECATED(
+      "Channel::CreateSecureFromUri is deprecated. Use Channel::Open.")
   static ptr_t CreateSecureFromUri(const std::string &uri,
                                    const std::string &path_to_ca_cert,
                                    const std::string &path_to_client_key = "",
                                    const std::string &path_to_client_cert = "",
-                                   bool verify_hostname = true,
+                                   bool verify_hostname_and_peer = true,
                                    int frame_max = 131072);
 
-  /**
-   * Constructor. Synchronously connects and logs in to the broker.
-   *
-   * @param host The hostname or IP address of the AMQP broker
-   * @param port The port to connect to the AMQP broker on
-   * @param username The username used to authenticate with the AMQP broker
-   * @param password The password corresponding to the username used to
-   * authenticate with the AMQP broker
-   * @param vhost The virtual host on the AMQP we should connect to
-   * @param frame_max Request that the server limit the maximum size of any
-   * frame to this value
-   */
-  explicit Channel(const std::string &host, int port,
-                   const std::string &username, const std::string &password,
-                   const std::string &vhost, int frame_max, bool sasl_external);
-
-  /**
-   * Constructor. Synchronously connects and logs in to the broker.
-   *
-   * @param host The hostname or IP address of the AMQP broker
-   * @param port The port to connect to the AMQP broker on
-   * @param username The username used to authenticate with the AMQP broker
-   * @param password The password corresponding to the username used to
-   * authenticate with the AMQP broker
-   * @param vhost The virtual host on the AMQP we should connect to
-   * @param frame_max Request that the server limit the maximum size of any
-   * frame to this value
-   * @param ssl_params TLS config
-   */
-  explicit Channel(const std::string &host, int port,
-                   const std::string &username, const std::string &password,
-                   const std::string &vhost, int frame_max,
-                   const SSLConnectionParams &ssl_params, bool sasl_external);
+ private:
+  class ChannelImpl;
 
  public:
+  explicit Channel(ChannelImpl *impl);
   // Non-copyable
   Channel(const Channel &) = delete;
   Channel &operator=(const Channel &) = delete;
@@ -343,6 +345,14 @@ class SIMPLEAMQPCLIENT_EXPORT Channel {
    * behavior.
    */
   int GetSocketFD() const;
+
+  /**
+   * Checks to see if an exchange exists on the broker.
+   *
+   * @param exchange_name the name of the exchange to check for.
+   * @returns true if the exchange exists on the broker, false otherwise.
+   */
+  bool CheckExchangeExists(std::string_view exchange_name);
 
   /**
    * Declares an exchange
@@ -438,6 +448,15 @@ class SIMPLEAMQPCLIENT_EXPORT Channel {
    */
   void UnbindExchange(const std::string &destination, const std::string &source,
                       const std::string &routing_key, const Table &arguments);
+
+  /**
+   * Checks to see if a queue exists on the broker.
+   *
+   * @param queue_name the name of the exchange to check for.
+   * @returns true if the exchange exists on the broker, false otherwise.
+   */
+  bool CheckQueueExists(std::string_view queue_name);
+
   /**
    * Declare a queue
    *
@@ -901,9 +920,22 @@ class SIMPLEAMQPCLIENT_EXPORT Channel {
    */
   bool BasicConsumeMessage(Envelope::ptr_t &envelope, int timeout = -1);
 
- protected:
+ private:
+  static ChannelImpl *OpenChannel(const std::string &host, int port,
+                                  const std::string &username,
+                                  const std::string &password,
+                                  const std::string &vhost, int frame_max,
+                                  bool sasl_external);
+
+  static ChannelImpl *OpenSecureChannel(const std::string &host, int port,
+                                        const std::string &username,
+                                        const std::string &password,
+                                        const std::string &vhost, int frame_max,
+                                        const OpenOpts::TLSParams &tls_params,
+                                        bool sasl_external);
+
   /// PIMPL idiom
-  std::unique_ptr<Detail::ChannelImpl> m_impl;
+  std::unique_ptr<ChannelImpl> m_impl;
 };
 
 }  // namespace AmqpClient

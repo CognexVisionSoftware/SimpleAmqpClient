@@ -21,7 +21,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # 4. If any interfaces have been removed since the last public release, then set age to 0.
 
 set(SAC_SOVERSION_CURRENT   7)
-set(SAC_SOVERSION_REVISION  0)
+set(SAC_SOVERSION_REVISION  1)
 set(SAC_SOVERSION_AGE       0)
 
 math(EXPR SAC_SOVERSION_MAJOR "${SAC_SOVERSION_CURRENT} - ${SAC_SOVERSION_AGE}")
@@ -75,6 +75,8 @@ set(SAC_LIB_SRCS
 
     src/SimpleAmqpClient/AmqpException.h
     src/AmqpException.cpp
+
+    src/SimpleAmqpClient/Bytes.h
 
     src/SimpleAmqpClient/Channel.h
     src/Channel.cpp
@@ -169,6 +171,8 @@ if (BUILD_API_DOCS)
     SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Doxyfile.in
     )
 endif ()
+
+include(GNUInstallDirs)
 
 install(TARGETS SimpleAmqpClient
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
