@@ -73,6 +73,7 @@ class Channel::ChannelImpl {
 
   bool CheckForQueuedMessageOnChannel(amqp_channel_t message_on_channel) const;
   void AddToFrameQueue(const amqp_frame_t &frame);
+  void GetAckOnChannel(amqp_channel_t channel);
 
   template <class ChannelListType>
   bool GetNextFrameFromBrokerOnChannel(

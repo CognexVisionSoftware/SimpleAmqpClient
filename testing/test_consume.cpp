@@ -133,6 +133,30 @@ TEST_F(connected_test, basic_consume_2consumers) {
   channel->BasicAck(envelope3);
 }
 
+TEST_F(connected_test, basic_consume_1000noack) {
+  BasicMessage::ptr_t message1 = BasicMessage::Create("Message1");
+
+  std::string queue = channel->DeclareQueue("");
+  std::string consumer = channel->BasicConsume(queue, "");
+  
+  std::vector<void*> tokens;
+  
+  for (int i = 0; i < 1000; ++i) {
+    message1->Timestamp(i);
+    void* token = channel->BasicPublishBegin("", queue, message1, true);
+    tokens.push_back(token);
+  }
+  
+  Envelope::ptr_t msg;
+  for (int i = 0; i < 1000; ++i) {
+    // std::cout << i << " a " << std::flush;
+    channel->BasicPublishEnd(tokens[i]);
+    // std::cout << "b " << std::flush;
+    channel->BasicConsumeMessage(consumer, msg);
+    // std::cout << "c" << std::endl;
+  }
+}
+
 TEST_F(connected_test, basic_consume_1000messages) {
   BasicMessage::ptr_t message1 = BasicMessage::Create("Message1");
 

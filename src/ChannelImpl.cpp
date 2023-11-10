@@ -51,6 +51,8 @@
 #include "SimpleAmqpClient/ConnectionClosedException.h"
 #include "SimpleAmqpClient/ConsumerTagNotFoundException.h"
 #include "SimpleAmqpClient/TableImpl.h"
+#include "SimpleAmqpClient/MessageRejectedException.h"
+#include "SimpleAmqpClient/MessageReturnedException.h"
 
 #define BROKER_HEARTBEAT 0
 
@@ -451,6 +453,73 @@ void Channel::ChannelImpl::AddToFrameQueue(const amqp_frame_t &frame) {
 
     m_delivered_messages.push_back(envelope);
   }
+}
+
+void Channel::ChannelImpl::GetAckOnChannel(amqp_channel_t channel) {
+  
+  auto& state = m_channels.at(channel);
+  if (state.unconsumed_ack > 0) {
+    --state.unconsumed_ack;
+    return;
+  }
+
+  // If we've done things correctly we can get one of 4 things back from the
+  // broker
+  // - basic.ack - our channel is in confirm mode, messsage was 'dealt with' by
+  // the broker
+  // - basic.nack - our channel is in confirm mode, queue has max-length set and
+  // is full, queue overflow stratege is reject-publish
+  // - basic.return then basic.ack - the message wasn't delievered, but was
+  // dealt with
+  // - channel.close - probably tried to publish to a non-existant exchange, in
+  // any case error!
+  // - connection.close - something really bad happened
+  const std::array<std::uint32_t, 3> PUBLISH_ACK = {
+      AMQP_BASIC_ACK_METHOD, AMQP_BASIC_RETURN_METHOD, AMQP_BASIC_NACK_METHOD};
+  amqp_frame_t response;
+  std::array<amqp_channel_t, 1> channels = {channel};
+  GetMethodOnChannel(channels, response, PUBLISH_ACK);
+
+  if (AMQP_BASIC_NACK_METHOD == response.payload.method.id) {
+    amqp_basic_nack_t *return_method =
+        reinterpret_cast<amqp_basic_nack_t *>(response.payload.method.decoded);
+    state.last_delivery_tag = return_method->delivery_tag;
+    // FIXME this exception should be thrown n times in case of a multiple nack
+    MessageRejectedException message_rejected(return_method->delivery_tag);
+    ReturnChannel(channel);
+    MaybeReleaseBuffersOnChannel(channel);
+    throw message_rejected;
+  }
+
+  if (AMQP_BASIC_RETURN_METHOD == response.payload.method.id) {
+    MessageReturnedException message_returned =
+        CreateMessageReturnedException(
+            *(reinterpret_cast<amqp_basic_return_t *>(
+                response.payload.method.decoded)),
+            channel);
+
+    const std::array<std::uint32_t, 1> BASIC_ACK = {AMQP_BASIC_ACK_METHOD};
+    GetMethodOnChannel(channels, response, BASIC_ACK);
+    ReturnChannel(channel);
+    MaybeReleaseBuffersOnChannel(channel);
+    throw message_returned;
+  }
+
+  amqp_basic_ack_t *ack = reinterpret_cast<amqp_basic_ack_t *>(response.payload.method.decoded);
+  if (ack->delivery_tag <= state.last_delivery_tag) {
+    // FIXME should we throw an exception here?
+    // throw std::runtime_error("wrong ack order");
+  }
+  else {
+    std::uint64_t diff = ack->delivery_tag - state.last_delivery_tag;
+    state.last_delivery_tag = ack->delivery_tag;
+    if (diff > 1U) {
+      state.unconsumed_ack = diff - 1U;
+    }
+  }
+
+  ReturnChannel(channel);
+  MaybeReleaseBuffersOnChannel(channel);
 }
 
 bool Channel::ChannelImpl::GetNextFrameFromBroker(
