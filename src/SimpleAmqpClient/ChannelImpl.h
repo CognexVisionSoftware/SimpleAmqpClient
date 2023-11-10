@@ -356,7 +356,12 @@ class Channel::ChannelImpl {
   typedef std::map<std::string, amqp_channel_t> consumer_map_t;
   consumer_map_t m_consumer_channel_map;
 
-  enum channel_state_t { CS_Closed = 0, CS_Open, CS_Used };
+  enum channel_availability_t { CS_Closed = 0, CS_Open, CS_Used };
+  struct channel_state_t {
+    channel_availability_t availability;
+    std::uint64_t last_delivery_tag = 0;
+    std::uint64_t unconsumed_ack = 0;
+  };
   typedef std::vector<channel_state_t> channel_state_list_t;
 
   channel_state_list_t m_channels;
