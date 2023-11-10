@@ -92,3 +92,17 @@ BasicQos, BasicRecover, and BasicCancel.
     // To cancel:
     channel->BasicCancel(consumer_tag);
 
+### Testing
+
+The tests need AMQP_BROKER environment variable to be se to the hostname (or IP).
+
+```sh
+export AMQP_BROKER=<hostname>
+```
+
+The tests assume the broker is listening on port 5672 without SSL auth. If your
+broker is running on a different port, this is recommended to forward that port:
+
+```sh
+socat tcp4-listen:5672,reuseaddr,fork tcp:localhost:5670
+```
