@@ -829,6 +829,10 @@ void* Channel::BasicPublishBegin(const std::string &exchange_name,
   Detail::amqp_pool_ptr_t pool;
   amqp_basic_properties_t properties = CreateAmqpProperties(*message, pool);
 
+  if (message->ReplyToIsSet() && message->ReplyTo() == "amq.rabbitmq.reply-to") {
+    m_impl->MaybeSubscribeToDirectReply(channel);
+  }
+
   m_impl->CheckForError(amqp_basic_publish(
       m_impl->m_connection, channel, StringToBytes(exchange_name),
       StringToBytes(routing_key), mandatory, immediate, &properties,
@@ -838,7 +842,12 @@ void* Channel::BasicPublishBegin(const std::string &exchange_name,
   return (void*)(intptr_t)channel; // should be an int16 ...
 }
 
-void Channel::BasicPublishEnd(void* token) {\
+const std::string& Channel::GetDirectReplyToken(void* token) {
+  amqp_channel_t channel = (amqp_channel_t)(intptr_t)token;
+  return m_impl->GetDirectReplyToken(channel);
+}
+
+void Channel::BasicPublishEnd(void* token) {
   amqp_channel_t channel = (amqp_channel_t)(intptr_t)token;
   m_impl->GetAckOnChannel(channel);
 }

@@ -728,6 +728,8 @@ class SIMPLEAMQPCLIENT_EXPORT Channel {
                     const BasicMessage::ptr_t message, bool mandatory = false,
                     bool immediate = false);
 
+  const std::string& GetDirectReplyToken(void* token);
+
   void BasicPublishEnd(void* token);
 
   /**

@@ -74,6 +74,9 @@ class Channel::ChannelImpl {
   bool CheckForQueuedMessageOnChannel(amqp_channel_t message_on_channel) const;
   void AddToFrameQueue(const amqp_frame_t &frame);
   void GetAckOnChannel(amqp_channel_t channel);
+  void SubscribeToChannel(amqp_channel_t channel);
+  void MaybeSubscribeToDirectReply(amqp_channel_t channel);
+  const std::string& GetDirectReplyToken(amqp_channel_t channel);
 
   template <class ChannelListType>
   bool GetNextFrameFromBrokerOnChannel(
@@ -362,6 +365,7 @@ class Channel::ChannelImpl {
     channel_availability_t availability;
     std::uint64_t last_delivery_tag = 0;
     std::uint64_t unconsumed_ack = 0;
+    std::string direct_reply_tag{};
   };
   typedef std::vector<channel_state_t> channel_state_list_t;
 

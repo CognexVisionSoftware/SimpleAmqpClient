@@ -51,6 +51,7 @@
 #include "SimpleAmqpClient/ConnectionClosedException.h"
 #include "SimpleAmqpClient/ConsumerTagNotFoundException.h"
 #include "SimpleAmqpClient/TableImpl.h"
+#include "SimpleAmqpClient/Bytes.h"
 #include "SimpleAmqpClient/MessageRejectedException.h"
 #include "SimpleAmqpClient/MessageReturnedException.h"
 
@@ -520,6 +521,46 @@ void Channel::ChannelImpl::GetAckOnChannel(amqp_channel_t channel) {
 
   ReturnChannel(channel);
   MaybeReleaseBuffersOnChannel(channel);
+}
+
+void Channel::ChannelImpl::MaybeSubscribeToDirectReply(amqp_channel_t channel) {
+  auto& state = m_channels.at(channel);
+  if (!state.direct_reply_tag.empty())
+    return;
+
+  const std::array<std::uint32_t, 1> CONSUME_OK = {
+    AMQP_BASIC_CONSUME_OK_METHOD};
+  
+  std::string queue = "amq.rabbitmq.reply-to";
+  std::string consumerTagIn;
+  amqp_basic_consume_t consume = {};
+  consume.queue = StringToBytes(queue);
+  consume.consumer_tag = StringToBytes(consumerTagIn);
+  consume.no_local = true;
+  consume.no_ack = true;
+  consume.exclusive = true;
+  consume.nowait = false;
+
+  // Detail::amqp_pool_ptr_t table_pool;
+  // consume.arguments =
+  //     Detail::TableValueImpl::CreateAmqpTable(arguments, table_pool);
+
+  amqp_frame_t response = DoRpcOnChannel(
+      channel, AMQP_BASIC_CONSUME_METHOD, &consume, CONSUME_OK);
+
+  amqp_basic_consume_ok_t *consume_ok =
+      (amqp_basic_consume_ok_t *)response.payload.method.decoded;
+  std::string tag((char *)consume_ok->consumer_tag.bytes,
+                  consume_ok->consumer_tag.len);
+  MaybeReleaseBuffersOnChannel(channel);
+
+  AddConsumer(tag, channel);
+  state.direct_reply_tag = tag;
+}
+
+const std::string& Channel::ChannelImpl::GetDirectReplyToken(amqp_channel_t channel) {
+  auto& state = m_channels.at(channel);
+  return state.direct_reply_tag;
 }
 
 bool Channel::ChannelImpl::GetNextFrameFromBroker(

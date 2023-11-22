@@ -33,6 +33,56 @@
 
 using namespace AmqpClient;
 
+
+TEST_F(connected_test, reply_to) {
+  std::string queue1 = channel->DeclareQueue("");
+  std::string queue2 = channel->DeclareQueue("");
+
+  std::string consumer1 = channel->BasicConsume(queue1);
+  std::string consumer2 = channel->BasicConsume(queue2);
+
+  // 'Client side' logic. Create a request and provide reply_to queue
+  BasicMessage::ptr_t outgoingRequest = BasicMessage::Create("request");
+  outgoingRequest->ReplyTo(queue1);
+  channel->BasicPublish("", queue2, outgoingRequest);
+  
+  // 'Server side' logic. Read request and send reply to reply_to queue.
+  Envelope::ptr_t incomingReq = channel->BasicConsumeMessage(consumer2);
+  EXPECT_EQ("request", incomingReq->Message()->Body());
+  EXPECT_EQ(queue1, incomingReq->Message()->ReplyTo());
+  channel->BasicPublish("", incomingReq->Message()->ReplyTo(), BasicMessage::Create("reply"));
+
+  // 'Client side' logic. Read reply.
+  Envelope::ptr_t incomingRep = channel->BasicConsumeMessage(consumer1);
+  EXPECT_EQ("reply", incomingRep->Message()->Body());
+}
+
+TEST_F(connected_test, direct_reply_to) {
+  std::string queue1 = channel->DeclareQueue("amq.rabbitmq.reply-to");
+  std::string queue2 = channel->DeclareQueue("");
+
+  // std::string consumer1 = channel->BasicConsume(queue1);
+  std::string consumer2 = channel->BasicConsume(queue2);
+
+  // 'Client side' logic. Create a request and provide reply_to queue
+  BasicMessage::ptr_t outgoingRequest = BasicMessage::Create("request");
+  outgoingRequest->ReplyTo(queue1);
+  auto token = channel->BasicPublishBegin("", queue2, outgoingRequest);
+  const std::string& consumer1 = channel->GetDirectReplyToken(token);
+  channel->BasicPublishEnd(token);
+  
+  // 'Server side' logic. Read request and send reply to reply_to queue.
+  Envelope::ptr_t incomingReq = channel->BasicConsumeMessage(consumer2);
+  EXPECT_EQ("request", incomingReq->Message()->Body());
+  // This doesn't have to be true. It normally starts with queue1 but no guarantee.
+  // EXPECT_EQ(queue1, incomingReq->Message()->ReplyTo());
+  channel->BasicPublish("", incomingReq->Message()->ReplyTo(), BasicMessage::Create("reply"));
+
+  // 'Client side' logic. Read reply.
+  Envelope::ptr_t incomingRep = channel->BasicConsumeMessage(consumer1);
+  EXPECT_EQ("reply", incomingRep->Message()->Body());
+}
+
 TEST(connecting_test, connect_default) {
   Channel::ptr_t channel = Channel::Create(connected_test::GetBrokerHost());
 }
