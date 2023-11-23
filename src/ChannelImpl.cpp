@@ -291,8 +291,27 @@ MessageReturnedException Channel::ChannelImpl::CreateMessageReturnedException(
 
 BasicMessage::ptr_t Channel::ChannelImpl::ReadContent(amqp_channel_t channel) {
   amqp_frame_t frame;
-
-  GetNextFrameOnChannel(channel, frame);
+  auto& state = m_channels.at(channel);
+  
+  auto getNextFrame = [&] {
+    GetNextFrameOnChannel(channel, frame);
+    
+    while (frame.frame_type == AMQP_FRAME_METHOD && frame.payload.method.id == AMQP_BASIC_ACK_METHOD) {
+      amqp_basic_ack_t *ack = reinterpret_cast<amqp_basic_ack_t *>(frame.payload.method.decoded);
+      if (ack->delivery_tag <= state.last_delivery_tag) {
+        // FIXME should we throw an exception here?
+        // throw std::runtime_error("wrong ack order");
+      }
+      else {
+        std::uint64_t diff = ack->delivery_tag - state.last_delivery_tag;
+        state.last_delivery_tag = ack->delivery_tag;
+        state.unconsumed_ack += diff;
+      }
+      GetNextFrameOnChannel(channel, frame);
+    }
+  };
+  
+  getNextFrame();
 
   if (frame.frame_type != AMQP_FRAME_HEADER) {
     // TODO: We should connection.close here
@@ -319,7 +338,7 @@ BasicMessage::ptr_t Channel::ChannelImpl::ReadContent(amqp_channel_t channel) {
 
   // frame #3 and up:
   while (received_size < body_size) {
-    GetNextFrameOnChannel(channel, frame);
+    getNextFrame();
 
     if (frame.frame_type != AMQP_FRAME_BODY)
       // TODO: we should connection.close here
